@@ -5,16 +5,10 @@ from datetime import timedelta
 # --------------------------------------------------
 # Page setup
 # --------------------------------------------------
-st.set_page_config(
-    page_title="Leave Normalization Tool",
-    layout="wide"
-)
+st.set_page_config(page_title="Leave Normalization Tool", layout="wide")
 
 st.title("📋 Leave Normalization Tool")
-st.caption(
-    "Converts mixed-session leave records into clean, payroll-safe rows "
-    "(0.5 day or aggregated full days)"
-)
+st.caption("Normalize leave data into payroll-safe format")
 
 # --------------------------------------------------
 # File upload
@@ -31,10 +25,17 @@ if not file:
 # --------------------------------------------------
 # Read file
 # --------------------------------------------------
-if file.name.endswith(".csv"):
-    df = pd.read_csv(file)
-else:
-    df = pd.read_excel(file)
+try:
+    if file.name.endswith(".csv"):
+        df = pd.read_csv(file)
+    else:
+        df = pd.read_excel(file, engine="openpyxl")
+except ImportError:
+    st.error(
+        "Excel upload requires `openpyxl`. "
+        "Add it to requirements.txt or upload CSV."
+    )
+    st.stop()
 
 st.subheader("📥 Uploaded Data")
 st.dataframe(df, use_container_width=True)
@@ -53,13 +54,13 @@ required_columns = [
     "ApplierRemarks",
 ]
 
-missing_cols = [c for c in required_columns if c not in df.columns]
-if missing_cols:
-    st.error(f"❌ Missing required columns: {missing_cols}")
+missing = [c for c in required_columns if c not in df.columns]
+if missing:
+    st.error(f"❌ Missing required columns: {missing}")
     st.stop()
 
 # --------------------------------------------------
-# Normalization Logic
+# Normalize Leave Logic
 # --------------------------------------------------
 output_rows = []
 
@@ -74,81 +75,54 @@ for _, row in df.iterrows():
     remarks = row["ApplierRemarks"]
     status = row.get("Status", "Approved")
 
-    # --------------------------------------------------
-    # CASE 1: Pure full-day leave (NO conversion)
-    # --------------------------------------------------
+    # ---------- Case 1: Pure full-day leave ----------
     if (
         days.is_integer()
         and from_sess == "First Session"
         and to_sess == "Second Session"
     ):
         output_rows.append([
-            emp,
-            start,
-            end,
-            from_sess,
-            to_sess,
+            emp, start, end,
+            from_sess, to_sess,
             int(days),
-            applied_on,
-            remarks,
-            status
+            applied_on, remarks, status
         ])
         continue
 
-    # --------------------------------------------------
-    # CASE 2: Half-day involved → convert
-    # --------------------------------------------------
+    # ---------- Case 2: Half-day involved ----------
     full_start = start
     full_end = end
 
-    # Start half day
+    # Start half
     if from_sess == "Second Session":
         output_rows.append([
-            emp,
-            start,
-            start,
-            "Second Session",
-            "Second Session",
-            0.5,
-            applied_on,
-            remarks,
-            status
+            emp, start, start,
+            "Second Session", "Second Session",
+            0.5, applied_on, remarks, status
         ])
         full_start = start + timedelta(days=1)
 
-    # End half day
+    # End half
     if to_sess == "First Session":
         output_rows.append([
-            emp,
-            end,
-            end,
-            "First Session",
-            "First Session",
-            0.5,
-            applied_on,
-            remarks,
-            status
+            emp, end, end,
+            "First Session", "First Session",
+            0.5, applied_on, remarks, status
         ])
         full_end = end - timedelta(days=1)
 
-    # Middle full days (AGGREGATED)
+    # Middle full days (aggregated)
     if full_start <= full_end:
         full_days = (full_end - full_start).days + 1
         if full_days > 0:
             output_rows.append([
-                emp,
-                full_start,
-                full_end,
-                "First Session",
-                "Second Session",
-                full_days,
-                applied_on,
-                remarks,
-                status
+                emp, full_start, full_end,
+                "First Session", "Second Session",
+                full_days, applied_on, remarks, status
             ])
 
 # --------------------------------------------------
-# Output dataframe
+# Normalized Output
 # --------------------------------------------------
 result = pd.DataFrame(
     output_rows,
@@ -163,21 +137,61 @@ result = pd.DataFrame(
         "ApplierRemarks",
         "Status"
     ]
-).sort_values(
-    ["EmployeeCode", "AppliedFrom"]
-)
+).sort_values(["EmployeeCode", "AppliedFrom"])
 
 st.subheader("✅ Normalized Output")
 st.dataframe(result, use_container_width=True)
 
 # --------------------------------------------------
-# Download
+# Download Normalized Output
 # --------------------------------------------------
-csv_data = result.to_csv(index=False).encode("utf-8")
+normalized_csv = result.to_csv(index=False).encode("utf-8")
 
 st.download_button(
-    label="⬇️ Download Converted CSV",
-    data=csv_data,
+    label="⬇️ Download Normalized Leave Data",
+    data=normalized_csv,
     file_name="normalized_leave_data.csv",
+    mime="text/csv"
+)
+
+# --------------------------------------------------
+# HR / Payroll Table
+# --------------------------------------------------
+def map_session(from_sess, to_sess):
+    if from_sess == "First Session" and to_sess == "First Session":
+        return 1   # First half
+    if from_sess == "Second Session" and to_sess == "Second Session":
+        return 2   # Second half
+    if from_sess == "First Session" and to_sess == "Second Session":
+        return 0   # Full day
+    return None
+
+payroll_df = pd.DataFrame({
+    "Employee ID": result["EmployeeCode"],
+    "Leave Type": "Leave",
+    "Unit": "Day",
+    "From": result["AppliedFrom"],
+    "To": result["AppliedTill"],
+    "Session": [
+        map_session(f, t)
+        for f, t in zip(result["FromSession"], result["ToSession"])
+    ],
+    "Start Time": "",
+    "Days/Hours Taken": result["NumberOfDays"],
+    "Reason for leave": result["ApplierRemarks"],
+})
+
+st.subheader("📄 HR / Payroll Format")
+st.dataframe(payroll_df, use_container_width=True)
+
+# --------------------------------------------------
+# Download HR / Payroll Output
+# --------------------------------------------------
+payroll_csv = payroll_df.to_csv(index=False).encode("utf-8")
+
+st.download_button(
+    label="⬇️ Download HR / Payroll Leave Data",
+    data=payroll_csv,
+    file_name="hr_payroll_leave_data.csv",
     mime="text/csv"
 )
