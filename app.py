@@ -117,7 +117,7 @@ if df[["AppliedFrom", "AppliedTill"]].isnull().any().any():
 # --------------------------------------------------
 df = df[
     (df["AppliedFrom"].dt.month == detected_month) &
-    (df["Status"].str.strip().str.lower() == "approved")
+    df["Status"] = df["Status"].astype(str)
 ]
 
 if df.empty:
