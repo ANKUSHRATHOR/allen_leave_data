@@ -1,20 +1,21 @@
 import streamlit as st
 import pandas as pd
 from datetime import timedelta
+import calendar
+import re
 
 # --------------------------------------------------
 # Page setup
 # --------------------------------------------------
 st.set_page_config(page_title="Leave Normalization Tool", layout="wide")
-
 st.title("📋 Leave Normalization Tool")
-st.caption("Normalize leave data into payroll-safe format")
+st.caption("Upload RAW HR leave export – app auto-cleans & normalizes")
 
 # --------------------------------------------------
 # File upload
 # --------------------------------------------------
 file = st.file_uploader(
-    "Upload Leave Data (CSV or Excel)",
+    "Upload RAW Leave Data (CSV or Excel)",
     type=["csv", "xlsx"]
 )
 
@@ -25,75 +26,155 @@ if not file:
 # --------------------------------------------------
 # Read file
 # --------------------------------------------------
-try:
-    if file.name.endswith(".csv"):
-        df = pd.read_csv(file)
-    else:
-        df = pd.read_excel(file, engine="openpyxl")
-except ImportError:
-    st.error(
-        "Excel upload requires `openpyxl`. "
-        "Add it to requirements.txt or upload CSV."
-    )
+if file.name.endswith(".csv"):
+    raw_df = pd.read_csv(file)
+else:
+    raw_df = pd.read_excel(file, engine="openpyxl")
+
+# --------------------------------------------------
+# RAW DATA FILTER + VIEW
+# --------------------------------------------------
+st.subheader("🔍 Filter – Raw Uploaded Data")
+
+raw_emp = st.multiselect(
+    "EmployeeCode (Raw)",
+    options=sorted(raw_df["EmployeeCode"].dropna().unique())
+)
+
+raw_status = st.multiselect(
+    "Status (Raw)",
+    options=sorted(raw_df["Status"].dropna().unique())
+)
+
+filtered_raw_df = raw_df.copy()
+
+if raw_emp:
+    filtered_raw_df = filtered_raw_df[filtered_raw_df["EmployeeCode"].isin(raw_emp)]
+
+if raw_status:
+    filtered_raw_df = filtered_raw_df[filtered_raw_df["Status"].isin(raw_status)]
+
+st.subheader("📥 H-Factor Raw Data")
+st.dataframe(filtered_raw_df, use_container_width=True)
+
+# --------------------------------------------------
+# Detect month from file name
+# --------------------------------------------------
+month_map = {m.lower(): i for i, m in enumerate(calendar.month_name) if m}
+file_name = file.name.lower()
+
+detected_month = None
+for name, num in month_map.items():
+    if re.search(name, file_name):
+        detected_month = num
+        break
+
+if not detected_month:
+    st.error("❌ Month name not found in file name (e.g. January, Feb)")
     st.stop()
 
-st.subheader("📥 Uploaded Data")
-st.dataframe(df, use_container_width=True)
+st.success(f"📆 Detected Month: {calendar.month_name[detected_month]}")
 
 # --------------------------------------------------
-# Validation
+# Required column mapping
 # --------------------------------------------------
-required_columns = [
-    "EmployeeCode",
-    "AppliedFrom",
-    "AppliedTill",
-    "FromSession",
-    "ToSession",
-    "NumberOfDays",
-    "AppliedOn",
-    "ApplierRemarks",
+COLUMN_MAP = {
+    "EmployeeCode": "EmployeeCode",
+    "AppliedFrom": "AppliedFrom",
+    "AppliedTill": "AppliedTill",
+    "FromSession": "FromSession",
+    "ToSession": "ToSession",
+    "NrOfDays": "NumberOfDays",
+    "AppliedOn": "AppliedOn",
+    "ApplierRemarks": "ApplierRemarks",
+    "Status": "Status",
+}
+
+missing = [c for c in COLUMN_MAP if c not in raw_df.columns]
+if missing:
+    st.error(f"❌ Missing required columns in RAW data: {missing}")
+    st.stop()
+
+# --------------------------------------------------
+# Clean + refine data
+# --------------------------------------------------
+df = raw_df[list(COLUMN_MAP.keys())].rename(columns=COLUMN_MAP)
+
+df["FromSession"] = df["FromSession"].str.strip().str.title()
+df["ToSession"] = df["ToSession"].str.strip().str.title()
+
+for col in ["AppliedFrom", "AppliedTill", "AppliedOn"]:
+    df[col] = pd.to_datetime(df[col], errors="coerce")
+
+if df[["AppliedFrom", "AppliedTill"]].isnull().any().any():
+    st.error("❌ Invalid dates found in AppliedFrom / AppliedTill")
+    st.stop()
+
+# --------------------------------------------------
+# Filter data by detected month
+# --------------------------------------------------
+df = df[
+    (df["AppliedFrom"].dt.month == detected_month) &
+    (df["Status"].str.strip().str.lower() == "approved")
 ]
 
-missing = [c for c in required_columns if c not in df.columns]
-if missing:
-    st.error(f"❌ Missing required columns: {missing}")
+if df.empty:
+    st.warning("⚠️ No leave records found for detected month")
     st.stop()
+
+# --------------------------------------------------
+# MONTH DATA FILTER + VIEW
+# --------------------------------------------------
+st.subheader("🔍 Filter – Month Leave Data")
+
+m_emp = st.multiselect(
+    "EmployeeCode (Month)",
+    options=sorted(df["EmployeeCode"].unique())
+)
+
+m_status = st.multiselect(
+    "Status (Month)",
+    options=sorted(df["Status"].unique())
+)
+
+filtered_month_df = df.copy()
+
+if m_emp:
+    filtered_month_df = filtered_month_df[filtered_month_df["EmployeeCode"].isin(m_emp)]
+
+if m_status:
+    filtered_month_df = filtered_month_df[filtered_month_df["Status"].isin(m_status)]
+
+st.subheader("📆 Month-filtered Leave Data")
+st.dataframe(filtered_month_df, use_container_width=True)
 
 # --------------------------------------------------
 # Normalize Leave Logic
 # --------------------------------------------------
 output_rows = []
 
-for _, row in df.iterrows():
+for _, row in filtered_month_df.iterrows():
     emp = row["EmployeeCode"]
-    start = pd.to_datetime(row["AppliedFrom"])
-    end = pd.to_datetime(row["AppliedTill"])
+    start = row["AppliedFrom"]
+    end = row["AppliedTill"]
     from_sess = row["FromSession"]
     to_sess = row["ToSession"]
-    days = float(row["NumberOfDays"])
     applied_on = row["AppliedOn"]
     remarks = row["ApplierRemarks"]
-    status = row.get("Status", "Approved")
+    status = row["Status"]
 
-    # ---------- Case 1: Pure full-day leave ----------
-    if (
-        days.is_integer()
-        and from_sess == "First Session"
-        and to_sess == "Second Session"
-    ):
+    # Full day
+    if from_sess == "First Session" and to_sess == "Second Session":
+        days = (end - start).days + 1
         output_rows.append([
-            emp, start, end,
-            from_sess, to_sess,
-            int(days),
-            applied_on, remarks, status
+            emp, start, end, from_sess, to_sess,
+            days, applied_on, remarks, status
         ])
         continue
 
-    # ---------- Case 2: Half-day involved ----------
     full_start = start
     full_end = end
 
-    # Start half
     if from_sess == "Second Session":
         output_rows.append([
             emp, start, start,
@@ -102,7 +183,6 @@ for _, row in df.iterrows():
         ])
         full_start = start + timedelta(days=1)
 
-    # End half
     if to_sess == "First Session":
         output_rows.append([
             emp, end, end,
@@ -111,18 +191,17 @@ for _, row in df.iterrows():
         ])
         full_end = end - timedelta(days=1)
 
-    # Middle full days (aggregated)
     if full_start <= full_end:
-        full_days = (full_end - full_start).days + 1
-        if full_days > 0:
+        days = (full_end - full_start).days + 1
+        if days > 0:
             output_rows.append([
                 emp, full_start, full_end,
                 "First Session", "Second Session",
-                full_days, applied_on, remarks, status
+                days, applied_on, remarks, status
             ])
 
 # --------------------------------------------------
-# Normalized Output
+# Normalized Output + FILTER + DOWNLOAD
 # --------------------------------------------------
 result = pd.DataFrame(
     output_rows,
@@ -139,59 +218,68 @@ result = pd.DataFrame(
     ]
 ).sort_values(["EmployeeCode", "AppliedFrom"])
 
-st.subheader("✅ Normalized Output")
-st.dataframe(result, use_container_width=True)
+st.subheader("🔍 Filter – Normalized Leave")
 
-# --------------------------------------------------
-# Download Normalized Output
-# --------------------------------------------------
-normalized_csv = result.to_csv(index=False).encode("utf-8")
+n_emp = st.multiselect(
+    "EmployeeCode (Normalized)",
+    options=sorted(result["EmployeeCode"].unique())
+)
+
+filtered_result = result.copy()
+if n_emp:
+    filtered_result = filtered_result[filtered_result["EmployeeCode"].isin(n_emp)]
+
+st.subheader("✅ Normalized Leave Output (0.5 leave splited)")
+st.dataframe(filtered_result, use_container_width=True)
 
 st.download_button(
-    label="⬇️ Download Normalized Leave Data",
-    data=normalized_csv,
-    file_name="normalized_leave_data.csv",
-    mime="text/csv"
+    "⬇️ Download Normalized Leave CSV",
+    filtered_result.to_csv(index=False).encode("utf-8"),
+    "normalized_leave.csv",
+    "text/csv"
 )
 
 # --------------------------------------------------
-# HR / Payroll Table
+# Payroll / Zoho Table + FILTER + DOWNLOAD
 # --------------------------------------------------
-def map_session(from_sess, to_sess):
-    if from_sess == "First Session" and to_sess == "First Session":
-        return 1   # First half
-    if from_sess == "Second Session" and to_sess == "Second Session":
-        return 2   # Second half
-    if from_sess == "First Session" and to_sess == "Second Session":
-        return 0   # Full day
-    return None
+SESSION_MAP = {
+    ("First Session", "First Session"): 1,
+    ("Second Session", "Second Session"): 2,
+    ("First Session", "Second Session"): 0,
+}
 
 payroll_df = pd.DataFrame({
-    "Employee ID": result["EmployeeCode"],
+    "Employee ID": filtered_result["EmployeeCode"],
     "Leave Type": "Leave",
     "Unit": "Day",
-    "From": result["AppliedFrom"],
-    "To": result["AppliedTill"],
+    "From": filtered_result["AppliedFrom"],
+    "To": filtered_result["AppliedTill"],
     "Session": [
-        map_session(f, t)
-        for f, t in zip(result["FromSession"], result["ToSession"])
+        SESSION_MAP.get((f, t))
+        for f, t in zip(filtered_result["FromSession"], filtered_result["ToSession"])
     ],
     "Start Time": "",
-    "Days/Hours Taken": result["NumberOfDays"],
-    "Reason for leave": result["ApplierRemarks"],
+    "Days/Hours Taken": filtered_result["NumberOfDays"],
+    "Reason for leave": filtered_result["ApplierRemarks"],
 })
 
-st.subheader("📄 HR / Payroll Format")
-st.dataframe(payroll_df, use_container_width=True)
+st.subheader("🔍 Filter – Zoho Payroll Data")
 
-# --------------------------------------------------
-# Download HR / Payroll Output
-# --------------------------------------------------
-payroll_csv = payroll_df.to_csv(index=False).encode("utf-8")
+p_emp = st.multiselect(
+    "Employee ID (Payroll)",
+    options=sorted(payroll_df["Employee ID"].unique())
+)
+
+filtered_payroll = payroll_df.copy()
+if p_emp:
+    filtered_payroll = filtered_payroll[filtered_payroll["Employee ID"].isin(p_emp)]
+
+st.subheader("📄 Zoho Formatted Data")
+st.dataframe(filtered_payroll, use_container_width=True)
 
 st.download_button(
-    label="⬇️ Download HR / Payroll Leave Data",
-    data=payroll_csv,
-    file_name="hr_payroll_leave_data.csv",
-    mime="text/csv"
+    "⬇️ Download Payroll CSV",
+    filtered_payroll.to_csv(index=False).encode("utf-8"),
+    "payroll_leave.csv",
+    "text/csv"
 )
