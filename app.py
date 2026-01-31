@@ -80,6 +80,7 @@ st.success(f"📆 Detected Month: {calendar.month_name[detected_month]}")
 # --------------------------------------------------
 COLUMN_MAP = {
     "EmployeeCode": "EmployeeCode",
+    "LeaveType": "LeaveType",          # ✅ ADD THIS
     "AppliedFrom": "AppliedFrom",
     "AppliedTill": "AppliedTill",
     "FromSession": "FromSession",
@@ -89,6 +90,7 @@ COLUMN_MAP = {
     "ApplierRemarks": "ApplierRemarks",
     "Status": "Status",
 }
+
 
 missing = [c for c in COLUMN_MAP if c not in raw_df.columns]
 if missing:
@@ -155,6 +157,7 @@ output_rows = []
 
 for _, row in filtered_month_df.iterrows():
     emp = row["EmployeeCode"]
+    leave_type = row["LeaveType"]   
     start = row["AppliedFrom"]
     end = row["AppliedTill"]
     from_sess = row["FromSession"]
@@ -167,7 +170,7 @@ for _, row in filtered_month_df.iterrows():
     if from_sess == "First Session" and to_sess == "Second Session":
         days = (end - start).days + 1
         output_rows.append([
-            emp, start, end, from_sess, to_sess,
+            emp,leave_type, start, end, from_sess, to_sess,
             days, applied_on, remarks, status
         ])
         continue
@@ -206,16 +209,18 @@ for _, row in filtered_month_df.iterrows():
 result = pd.DataFrame(
     output_rows,
     columns=[
-        "EmployeeCode",
-        "AppliedFrom",
-        "AppliedTill",
-        "FromSession",
-        "ToSession",
-        "NumberOfDays",
-        "AppliedOn",
-        "ApplierRemarks",
-        "Status"
-    ]
+    "EmployeeCode",
+    "LeaveType",          # ✅ ADD
+    "AppliedFrom",
+    "AppliedTill",
+    "FromSession",
+    "ToSession",
+    "NumberOfDays",
+    "AppliedOn",
+    "ApplierRemarks",
+    "Status"
+]
+
 ).sort_values(["EmployeeCode", "AppliedFrom"])
 
 st.subheader("🔍 Filter – Normalized Leave")
@@ -250,7 +255,7 @@ SESSION_MAP = {
 
 payroll_df = pd.DataFrame({
     "Employee ID": filtered_result["EmployeeCode"],
-    "Leave Type": "Leave",
+    "Leave Type": filtered_result["LeaveType"],   # ✅ FROM RAW DATA
     "Unit": "Day",
     "From": filtered_result["AppliedFrom"],
     "To": filtered_result["AppliedTill"],
@@ -262,6 +267,7 @@ payroll_df = pd.DataFrame({
     "Days/Hours Taken": filtered_result["NumberOfDays"],
     "Reason for leave": filtered_result["ApplierRemarks"],
 })
+
 
 st.subheader("🔍 Filter – Zoho Payroll Data")
 
