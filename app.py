@@ -3,6 +3,8 @@ import pandas as pd
 from datetime import timedelta
 import calendar
 import re
+import io
+
 
 # --------------------------------------------------
 # Page setup
@@ -259,4 +261,46 @@ st.download_button(
     payroll_df.to_csv(index=False).encode("utf-8"),
     "payroll_leave.csv",
     "text/csv"
+)
+# --------------------------------------------------
+# Download ALL tables in ONE Excel (4 Sheets)
+# --------------------------------------------------
+st.subheader("⬇️ Download Complete Excel (All Tables)")
+
+excel_buffer = io.BytesIO()
+
+with pd.ExcelWriter(excel_buffer, engine="xlsxwriter") as writer:
+    # Sheet 1: Raw Uploaded Data (filtered)
+    filtered_raw_df.to_excel(
+        writer,
+        sheet_name="Raw_Data",
+        index=False
+    )
+
+    # Sheet 2: Month-filtered Leave Data
+    filtered_month_df.to_excel(
+        writer,
+        sheet_name="Month_Leave_Data",
+        index=False
+    )
+
+    # Sheet 3: Normalized Leave Output
+    result.to_excel(
+        writer,
+        sheet_name="Normalized_Leave",
+        index=False
+    )
+
+    # Sheet 4: Zoho / Payroll Data
+    payroll_df.to_excel(
+        writer,
+        sheet_name="Zoho_Payroll",
+        index=False
+    )
+
+st.download_button(
+    label="⬇️ Download Full Leave Report (Excel)",
+    data=excel_buffer.getvalue(),
+    file_name="Leave_Normalization_Report.xlsx",
+    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 )
