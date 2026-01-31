@@ -117,8 +117,9 @@ if df[["AppliedFrom", "AppliedTill"]].isnull().any().any():
 # --------------------------------------------------
 df = df[
     (df["AppliedFrom"].dt.month == detected_month) &
-    df["Status"] = df["Status"].astype(str)
+    (df["Status"].astype(str).str.contains("approved", case=False, na=False))
 ]
+
 
 if df.empty:
     st.warning("⚠️ No leave records found for detected month")
