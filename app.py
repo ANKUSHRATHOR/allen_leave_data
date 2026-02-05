@@ -4,7 +4,14 @@ from datetime import timedelta
 import calendar
 import re
 import io
+# Proper mixed Excel date parser (real excel date + text 04-Jun-2025)
+def parse_mixed_excel_date(series):
+    parsed = pd.to_datetime(series, errors="coerce")
 
+    mask = parsed.isna() & series.notna()
+    parsed.loc[mask] = pd.to_datetime(series[mask], format="%d-%b-%Y", errors="coerce")
+
+    return parsed
 
 # --------------------------------------------------
 # Page setup
@@ -114,8 +121,10 @@ for col in ["FromSession", "ToSession", "Status"]:
     )
 
 for col in ["AppliedFrom", "AppliedTill", "AppliedOn"]:
-    df[col] = pd.to_datetime(df[col], errors="coerce")
+    df[col] = parse_mixed_excel_date(df[col])
 
+# Only real blanks become single-day leave
+df["AppliedTill"] = df["AppliedTill"].fillna(df["AppliedFrom"])
 
 
 # --------------------------------------------------
